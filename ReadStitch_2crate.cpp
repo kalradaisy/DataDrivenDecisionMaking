@@ -1,5 +1,5 @@
 //Code written by Daisy Kalra (June 20, 2022) dkalra@nevis.columbia.edu                
-// Binary decoder to decode SN data, calculate TPs and write TPs to a text file.       
+// Binary decoder to decode SN data, calculate summaries of ionization (trigger primitives) and reorganizes data from 1.6ms to 2.3ms data chunks and transfer trigger primitives per 2.3 ms to the next process in pipeline using zeroMQ message passing.       
 
 #include <iostream>
 #include <fstream>
@@ -29,6 +29,7 @@
 
 using namespace std;
 
+//to sort out the filenames within a directory
 bool naturalSortComparator(const std::string& a, const std::string& b) {
   std::string::const_iterator it1 = a.begin();
   std::string::const_iterator it2 = b.begin();
@@ -62,7 +63,7 @@ bool naturalSortComparator(const std::string& a, const std::string& b) {
 }
 
 
-
+//read channel map from a text file which returns a larsoft channel number based on input (FEM, channel number within FEM and crate number)
 struct ForChannelMap {
   int crate = {0};
   int femchmap   = {0};
@@ -81,6 +82,7 @@ struct ForChannelMap {
 
 };
 
+//Read baseline values to subtract it from ADC waveforms per channel
 struct ForBaseline {
   int seb = {0};
   int sebfem   = {0};
@@ -99,7 +101,7 @@ struct ForBaseline {
 
 };
 
-
+// The way we pass information to the next process using zeroMQ message passing
 struct PassInfoToStitching {
   uint32_t minFrame = {0};
   uint32_t frame4 = {0};
