@@ -1,4 +1,4 @@
-//Code written by Daisy Kalra (June 20, 2022) dkalra@nevis.columbia.edu                
+//Code written by Daisy Kalra (Feb 04, 2025) dkalra@nevis.columbia.edu                
 // Binary decoder to decode SN data, calculate TPs and write TPs to a text file.       
 
 #include <iostream>
@@ -29,23 +29,6 @@
 
 
 using namespace std;
-
-double adjustAmp(double amp) {
-  if (amp > 120 or amp<35) {
-    std::random_device rd;
-    std::mt19937 gen(rd());
-    std::normal_distribution<double> distribution(80.0, 100.0); // Mean 60, Standard Deviation 100
-    //    std::poisson_distribution<int> distribution(60); // Poisson distribution with mean 60
-
-    double new_amp;
-    do {
-      new_amp = distribution(gen);
-    } while (new_amp < 5 || new_amp > 800); // Ensure it stays within the range
-
-    amp = new_amp;
-  }
-  return amp;
-}
 
 
 std::string toLowerCase(std::string s) {
@@ -1338,20 +1321,10 @@ int main(int argc, char** argv){
       	
         if(adcvalremainder>amp){
 	   amp=adcvalremainder;
-	   //	   if(amp>120 or amp<35){
-	   // amp = adjustAmp(amp); // rand() % 71 + 30;
-	   //adcvalremainder=amp;
-	     
-	     //adcvalremainder=60;
 	   }
 	 
 	 intgrl +=adcvalremainder;
 
-	 /*	 if(adcval>amp){
-           amp=adcval;
-         }
-         intgrl +=adcval;
-	 */
 	  if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1 and tot>totval){
 	    std::cout <<"************* First 16 bits loop *********" << std::endl;
 	    std::cout << "Check Frame: " <<std::dec << frame4 << std::endl; //hex_to_decimal_32u(frame4) << std::endl;                                                       
@@ -1495,13 +1468,6 @@ int main(int argc, char** argv){
 	  */
 	  if(adcvalremainder>amp){
 	    amp=adcvalremainder;
-	    //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                          
-	    //  if(amp>120 or amp<35){
-	    //amp =  adjustAmp(amp); // rand() % 71 + 30;
-	    // adcvalremainder=amp;
-	      //	      amp=60;
-	      //adcvalremainder=60;
-	    //}
                                                                
 	  }
 	  intgrl +=adcvalremainder;
@@ -1671,22 +1637,9 @@ int main(int argc, char** argv){
 	      }
 	    
 
-	    /*   if(adcval>amp){
-	      amp=adcval;
-	    }
-	    intgrl +=adcval;
-
-
-	    */
 	    if(adcvalremainder>amp){
 	      amp=adcvalremainder;
                      
-	      //  if(amp>120 or amp<35){
-	      //amp =  adjustAmp(amp); //rand() % 71 + 30;
-	      // adcvalremainder=amp;
-		//		amp=60;
-		//adcvalremainder=60;
-	      //}
       
 	    }
 	    intgrl +=adcvalremainder;
@@ -1868,12 +1821,6 @@ int main(int argc, char** argv){
 	  */
 	  if(adcvalremainder>amp){
 	    amp=adcvalremainder;
-	    //  if(amp>120 or amp<35){
-	    //amp =  adjustAmp(amp); // rand() % 71 + 30;
-	    //adcvalremainder=amp;
-	      //	      amp=60;
-	      //adcvalremainder=60;
-	    //    /}
 
 	  }
 	  intgrl += adcvalremainder;
@@ -2035,26 +1982,12 @@ int main(int argc, char** argv){
 
 		  if(adcvalremainder>amp){
 		    amp=adcvalremainder;
-		    //if(amp>120 or amp<35){
-		      //amp =  adjustAmp(amp) ; //rand() % 71 + 30;
-		      //adcvalremainder=amp;
-		      //		      amp=60;
-		      //adcvalremainder=60;
-		      //}
-
 
 		  }
 		  intgrl +=adcvalremainder;
 		       
-		  /*	if(adcval>amp){
-			  amp=adcval;
-			}
-			intgrl +=adcval;
 
-		  */
-
-
-			//		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << "\t" << adcvalremainder << " \n";
+		  //		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << "\t" << adcvalremainder << " \n";
 		samplecount++;
 	  }
 	  adcdiff.clear();
@@ -2177,22 +2110,9 @@ int main(int argc, char** argv){
 	  
            if(adcvalremainder>amp){
               amp=adcvalremainder;
-	      //	      if(amp>120 or amp<35){
-
-	      //amp =  adjustAmp(amp); // rand() % 71 + 30; 
-	      //	adcvalremainder=amp;
-
-	      //}
            
  }
             intgrl += adcvalremainder;
-	  
-	    /*
-	  if(adcval>amp){
-	    amp=adcval;
-	  }
-	  intgrl +=adcval;
-	    */
 
 
             if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1 and tot>totval){
