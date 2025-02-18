@@ -1,5 +1,5 @@
 //Code written by Daisy Kalra (June 20, 2022) dkalra@nevis.columbia.edu                
-// Binary decoder to decode SN data, calculate summaries of ionization (trigger primitives) and reorganizes data from 1.6ms to 2.3ms data chunks and transfer trigger primitives per 2.3 ms to the next process in pipeline using zeroMQ message passing.       
+// Binary decoder to decode SN data, calculate TPs and write TPs to a text file.       
 
 #include <iostream>
 #include <fstream>
@@ -15,7 +15,7 @@
 #include <cstdint>
 //#include <filesystem>
 #include <boost/filesystem.hpp>
-
+#include <bitset>
 
 #include <chrono>
 
@@ -25,11 +25,34 @@
 
 #include <dirent.h>
 #include <cstring>
+#include <random>
 
 
 using namespace std;
 
-//to sort out the filenames within a directory
+double adjustAmp(double amp) {
+  if (amp > 120 or amp<35) {
+    std::random_device rd;
+    std::mt19937 gen(rd());
+    std::normal_distribution<double> distribution(80.0, 100.0); // Mean 60, Standard Deviation 100
+    //    std::poisson_distribution<int> distribution(60); // Poisson distribution with mean 60
+
+    double new_amp;
+    do {
+      new_amp = distribution(gen);
+    } while (new_amp < 5 || new_amp > 800); // Ensure it stays within the range
+
+    amp = new_amp;
+  }
+  return amp;
+}
+
+
+std::string toLowerCase(std::string s) {
+  std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+  return s;
+}
+
 bool naturalSortComparator(const std::string& a, const std::string& b) {
   std::string::const_iterator it1 = a.begin();
   std::string::const_iterator it2 = b.begin();
@@ -63,7 +86,7 @@ bool naturalSortComparator(const std::string& a, const std::string& b) {
 }
 
 
-//read channel map from a text file which returns a larsoft channel number based on input (FEM, channel number within FEM and crate number)
+
 struct ForChannelMap {
   int crate = {0};
   int femchmap   = {0};
@@ -82,7 +105,6 @@ struct ForChannelMap {
 
 };
 
-//Read baseline values to subtract it from ADC waveforms per channel
 struct ForBaseline {
   int seb = {0};
   int sebfem   = {0};
@@ -101,7 +123,7 @@ struct ForBaseline {
 
 };
 
-// The way we pass information to the next process using zeroMQ message passing
+
 struct PassInfoToStitching {
   uint32_t minFrame = {0};
   uint32_t frame4 = {0};
@@ -214,28 +236,24 @@ int returnbaseline(int fseb, int fsebfem, int fsebfemch, std::vector<ForBaseline
 
 
 int main(int argc, char** argv){
-//int main (int argc, char* argv[]){
-//int main(){
-//  zmq::context_t context(1);
-  // zmq::socket_t publisher(context, ZMQ_PUB);
-  //publisher.bind("tcp://127.0.0.1:7732");
-  //std::cout << "bind socket pub" << std::endl;
+
+  int CRATE=strtol(argv[1], nullptr, 0); 
 
   zmq::context_t context1(1);
   zmq::socket_t publisher(context1, ZMQ_PUB);
-  publisher.bind("tcp://127.0.0.1:7650"); // 50 from 42                                                                                                                  
+  publisher.bind("tcp://127.0.0.1:7650");                                                                                                      
    
-
   zmq::context_t context2s(1);
   zmq::socket_t publisher2s(context2s, ZMQ_PUB);
-  publisher2s.bind("tcp://127.0.0.1:7652"); //52
+ 
+  publisher2s.bind("tcp://127.0.0.1:7652"); 
   
 
   //For channel mapping                                                                                                                                                                            
 
   // int CRATE=strtol(argv[2], nullptr, 0); //Change for SEB                                                             
                                                     
-  int CRATE=strtol(argv[1], nullptr, 0); //Change for SEB  
+  //  int CRATE=strtol(argv[1], nullptr, 0); //Change for SEB  
    // int CRATE = 2;             
   std::vector<ForChannelMap> holdChMapIds;
   std::ifstream mapFile;
@@ -254,12 +272,24 @@ int main(int argc, char** argv){
   std::ofstream outFile;
   outFile.open(argv[5]);
 
+  int dataset=strtol(argv[6], nullptr, 0);
+
+  //  uint64_t limit= 25;  //strtol(argv[7], nullptr, 0);
+  int limit  = strtol(argv[7], nullptr, 0); // 50;//11;12 gives us multiple peaks
+  int limit1 = strtol(argv[8], nullptr, 0); // 16;
+  int limit3=4;
+  int addADC=2;
+  //  uint64_t limit2= 3000;
+  //  uint64_t limit3= 15;
+  // int64_t limit3 = 25; //strtol(argv[8], nullptr, 0);
+//50;
+
   std::vector<ForBaseline> holdsebpeds;
   std::ifstream pedFile;
   pedFile.open("baseline.txt");
   //  int pedestal;                                                                                                                       
   //change in different seb files
-  int myseb=2;
+  int myseb=CRATE;
 
   int sebfemchped,sebfemch, sebfem, seb, baseline,countflipbit;
   countflipbit=0;
@@ -307,18 +337,39 @@ int main(int argc, char** argv){
   uint16_t timetick=0;
 
   uint64_t adcval, amp, intgrl; // intgrlval;                                                                                                             
-  uint64_t limit=100;
-  uint64_t limit2=20;
-  int diff,adcdiff,nearestPower;
+  // uint64_t limit=50;
+  //  uint64_t limit2=8000;
+  int countFlipBit=0;
+  int totval=20;
+  int diff,diffcheck,nearestPower,diffprev;
+  std::vector<int> adcdiff;
+
   int samplecount;
+
   int tot;
-  uint64_t adcvalremainder, prevadcval;// baseline;
+  uint64_t adcvalremainder, prevadcval, prevprevadcval;// baseline;
+  bool inFrame, countadc;
+  countadc=false;
+  inFrame=false;
   //  adcvalremainder=0;
   //adcval=480;
   //baseline=480;
 
                                           
   int run,subrun;
+
+  std::vector<std::pair<std::string, int>> huffmanTable = {
+    {"1", 0},
+    {"01", -1},
+    {"001", 1},
+    {"0001", -2},
+    {"00001", 2},
+    {"000001", -3},
+    {"0000001", 3}
+  };
+
+
+
 
   std::ifstream binFile;
   bool doincrement=false;
@@ -331,9 +382,12 @@ int main(int argc, char** argv){
 
 
   //change seb number in diifferent instances
- std::string pattern = "seb02";
+  std::string pattern = "seb0"+std::to_string(CRATE);
  // const char* directory = "/data/kalra_TPCTriggerFiles/Nominal54/"; // "/home/uboonedaq/kalra_seb01/Files/54/";
- const char* directory = "/data/kalra_TPCTriggerFiles/Nom_plus_0/";
+  //  const char* 
+    std::string directory1 = "/data/kalra_TPCTriggerFiles/Nom_plus_"+std::to_string(dataset);//OlduBSNFIle/"; // Nom_plus_0/";
+    const char* directory = directory1.c_str();
+
  DIR* dir = opendir(directory);
  if (dir == nullptr) {
    std::cerr << "Error opening directory." << std::endl;
@@ -367,15 +421,13 @@ int main(int argc, char** argv){
    
    std::cout << "Found file: " << filename <<  std::endl;   
        //   std::ifstream binFile;
-       binFile.open("/data/kalra_TPCTriggerFiles/Nom_plus_0/"+filename, std::ios::binary);
-       auto endf = std::chrono::system_clock::now();
-       auto elapsedf = std::chrono::duration_cast<std::chrono::microseconds>(endf - startf);
-       std::cout << "time to open a file: " << std::dec << elapsedf.count() << " microseconds" << std::endl;
-
-       std::string runNumber = filename.substr(42,5);                                                                                                           
-       run = std::stoi(runNumber);                                                                                                                                 
-       std::string subrunNumber = filename.substr(48,5);                                                                                                           
-       subrun = std::stoi(subrunNumber);                                                                                                                           
+   binFile.open("/data/kalra_TPCTriggerFiles/Nom_plus_"+std::to_string(dataset)+"/"+filename, std::ios::binary);
+      
+       //       std::string runNumber =  filename.substr(42,5);                                                                                                        
+   
+            run = 16656;// std::stoi(runNumber);                                                                                                                                 
+       // std::string subrunNumber = filename.substr(48,5);                                                                                                           
+        subrun = 23; // std::stoi(subrunNumber);                                                                                                                           
        //       std::cout << "Run: " << run <<  " ,Subrun " << subrun << std::endl; 
            
 
@@ -393,6 +445,13 @@ int main(int argc, char** argv){
 
   cout << " binary file " << binFile << endl;
 
+  auto endf = std::chrono::system_clock::now();
+  auto elapsedf = std::chrono::duration_cast<std::chrono::microseconds>(endf - startf);
+  std::cout << "time to open a file: " << std::dec << elapsedf.count() << " microseconds" << std::endl;
+
+
+
+
   while( binFile.peek() != EOF ){
     auto start = std::chrono::system_clock::now();
     uint32_t word32b;
@@ -403,16 +462,32 @@ int main(int argc, char** argv){
 
     uint16_t first16b = word32b & 0xffff; //right 16 bit word                                                                                                                                      
     uint16_t last16b = (word32b>>16) & 0xffff; // left 16 bit word                                                                                                                                 
+    /*
+    std::cout << "32-bit word- " << word32b << " \t" << "made from - " << last16b << first16b << std::endl;
 
-    //    std::cout << "32-bit word- " << word32b << " \t" << "made from - " << last16b << first16b << std::endl;
+    cout << "first16b " << std::hex << first16b << std::endl;
+    cout << "last16b "<< std::hex << last16b << std::endl;
 
+    cout << "32-bit word: 0x" << hex << word32b << endl;
+    cout << "Extracted first16b: 0x" << hex << first16b 
+         << " (Binary: " << bitset<16>(first16b) << ")" << endl;
+    cout << "Extracted last16b: 0x" << hex << last16b 
+         << " (Binary: " << bitset<16>(last16b) << ")" << endl;
 
-    // auto start = std::chrono::system_clock::now();
-    //    cout << "Initial : "<<std::dec << start.time_since_epoch().count()  << endl;                                                                                                     
+    uint16_t mask = 0x8000;
+    cout << "Mask: " << bitset<16>(mask) << endl;
+    cout << "Bitwise AND result: " << bitset<16>(first16b & mask) << endl;
+    */
+
+    //auto start = std::chrono::system_clock::now();
+    // cout << "Word32b : " << word32b <<  endl; //<<std::dec << start.time_since_epoch().count()  << endl;                                                                    
+    //cout << "right bits: " << first16b << " , left bits: " << last16b << endl;                     
+             
     if(word32b == 0xffffffff) {
       cout << "Start of frame ********************" << endl;
       femHdrCount=1;
       doincrement=true;
+      inFrame=true;
       start = std::chrono::system_clock::now();
       //cout << "tplist at frame beginning: " << std::dec << tp_list.size() << endl;
     }
@@ -424,6 +499,7 @@ int main(int argc, char** argv){
       //      auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
       std::cout << "Elapsed time (eof): " << std::dec << elapsed.count() << " microseconds" << std::endl;
       //      cout << "check frame4: " << frame4 << endl;
+
       if(frame4==minFrame+2){
         //Pass the tp_list to next stitching code and then clear the list, for now checking the size of tp_list here and then clearing the tp_list                                                 
         // --> Need to put interfacing code here                                                                                                                                                   
@@ -439,7 +515,7 @@ int main(int argc, char** argv){
         goStitch=true;
         //cout <<"GoStitchTrue 2" << endl;
 
-	 }
+	     }
 
 	if(goStitch==true){
 	  //cout << "hello" << endl;
@@ -840,7 +916,6 @@ int main(int argc, char** argv){
 	    zmq::message_t message1(sizeof(PassInfoToAlg) * stitchedTP_part1.size());
             memcpy(message1.data(), stitchedTP_part1.data(), sizeof(PassInfoToAlg) * stitchedTP_part1.size());
             publisher.send(message1);
-
 	    zmq::message_t message2(sizeof(PassInfoToAlg) * stitchedTP_part2.size());
             memcpy(message2.data(), stitchedTP_part2.data(), sizeof(PassInfoToAlg) * stitchedTP_part2.size());
             publisher2s.send(message2);
@@ -936,7 +1011,7 @@ int main(int argc, char** argv){
 
 
 	  auto end2dr = std::chrono::system_clock::now();
-	  auto elapsed2dr = std::chrono::duration_cast<std::chrono::microseconds>(end2dr - start);
+	  auto elapsed2dr = std::chrono::duration_cast<std::chrono::microseconds>(end2dr - start);// endf); // start);
 	  std::cout << "Sent 2 drift regions. : " << std::dec << elapsed2dr.count() << " microseconds" << std::endl;
 
 	  cout << "Size of tp_list: " << tp_list.size() << endl;
@@ -1018,11 +1093,13 @@ int main(int argc, char** argv){
         //tp_list.clear();
 
 	//}
+	inFrame=false;    
     }
 
     else {
-
-      if(doincrement==true){ //we need this boolean so as to stop FEM cntr after evaluating frame number.                                                                                                                                                             
+      //      cout << std::dec <<  "inFrame" << inFrame << "doincrement" << doincrement << endl;
+      if(inFrame==true) {
+	if(doincrement==true){ //we need this boolean so as to stop FEM cntr after evaluating frame number.   
         femHdrCount+=1;
 
         if (femHdrCount==5){ // FEM frame number                                                                                                                                                                                                                      
@@ -1031,14 +1108,14 @@ int main(int argc, char** argv){
           framebitsToskip = (last16b & 0x3f);   // last 6 bits of FEM frame number                                                                                                                                                                                    
         }
 
-        if (femHdrCount==8){ //ROI frame number                                                                                                                                                                                                                       
+          if (femHdrCount==8){ //ROI frame number                                                                                                                                                                                                                       
           if(first16b>>12 == 0x1){
             frame2=(first16b>>6) & 0x3f;
             //Take care of roll over of bits                                                                                                                                                                                                                          
             if ((framebitsToskip-frame2)>=0){
               frame3 = (frame<<12)+(frame1<<6)+(frame2);
               frame4 = (frame3 & 0xffffff);
-	      //std::cout <<"Frame: " <<  std::dec << frame4 << std::endl;     
+	      std::cout <<"Frame: " <<  std::dec << frame4 << std::endl;     
 	      if(frame4>1){  //!=0){                                                                                                                                                                                                                                  
 		FrameCounter+=1;
               }
@@ -1076,7 +1153,7 @@ int main(int argc, char** argv){
               //std::cout << "diff. : " << (framebitsToskip-frame2)<< " and dec is: " << std::dec <<  (framebitsToskip-frame2) << std::endl;                                                                                                                          
               frame3 = (frame<<12)+(frame1<<6)+(frame2);
               frame4 = (frame3 & 0xffffff);
-	      //std::cout<<"Frame L: " <<  std::dec << frame4 << std::endl;
+	      std::cout<<"Frame L: " <<  std::dec << frame4 << std::endl;
 	      if(frame4>1){ //!=0){                                                                                                                                                                                                                                   
                 FrameCounter+=1;
               }
@@ -1100,26 +1177,25 @@ int main(int argc, char** argv){
 
         } //close femhdrcnt == 8                                                                                                                                                                                                                                      
 
-      } //close do increment loop                                                                                                                                                                                  
+	} //close do increment loop                                                                                                                                                                                  
       //      else{ // if doincrement is not true                                                 
-
+     
       if ((last16b >>8 == 0xf1) and (first16b == 0xffff)){
         fem =(last16b&0x1f);
-	// std::cout << "FEM number : " << std::dec << fem << std::endl;                                                                                                                                                                                               
+        //std::cout << "FEM number : " << std::dec << fem << std::endl;                                                                                                                                                 
+	countadc=false;                                  
       }
-
+     
+       
       if(first16b>>12 == 0x1){
-        channel = (first16b & 0x3f);
+	channel = (first16b & 0x3f);
+	//	std::cout << std::hex << first16b << std::endl;
 	//std::cout <<  "Channel Number: " << std::dec << channel << std::endl;
-	//std::cout << CRATE << std::endl;
 	mappedchannel = returnWire(CRATE,fem,channel,holdChMapIds);
-	//std::cout <<  "larsoft Channel Number: " << " \t" << mappedchannel << std::endl;
-	//std::cout << "Start of channel : " << std::dec << channel << std::endl;
-
-	baseline = returnbaseline(myseb,fem,channel,holdsebpeds);
+	baseline =  returnbaseline(myseb,fem,channel,holdsebpeds);
 	//std::cout <<  "Pedestal for channel is:  " << std::dec << baseline << std::endl;
-
-
+	prevadcval=baseline;
+	prevprevadcval=baseline;
         tot=0;
         intgrl=0;
         amp=0;
@@ -1128,54 +1204,515 @@ int main(int argc, char** argv){
 	//baseline=adcval;
 
       }
-
-      else if (first16b>>14 == 01){
-	//cout << " ******* beg. of waveform " << endl;
+      //# Check for Beginning of Waveform Packet: 0b01??????????????                                                                                                                                                                            
+      else if ((first16b & 0xC000) == 0x4000){
+	//   cout << " ******* beg. of waveform " << std::hex << first16b << endl;
 	proceed=true;
-	//	cout << "TP: " << std::dec  << tot<< " , " << amp<< " , " << intgrl << endl;
-	
-	/*if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){ // and amp<4097){
-	  std::cout <<"************* First 16 bits loop *********" << std::endl;
-	  std::cout << "Check Frame: " <<std::dec << frame4 << std::endl; //hex_to_decimal_32u(frame4) << std::endl;                                                                                 
-	  std::cout << "FEM number : " << std::dec << fem << std::endl;
-	  std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	  std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	  std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	  std::cout << "Final adc val: " << std::dec  << amp << std::endl;
-	  std::cout << "tot: " <<  tot << std::endl;
-	  std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	  std::cout << "time: " << std::dec << timetick << std::endl;
-	  
-          if(channel>31 and channel<64){
-	    cout << "filling tplist" <<endl;
-	    tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);
-	  } }
-	*/
+
 	samplecount=0;      
 	tot=0;
 	intgrl=0;
 	amp=0;
        
 	timetick =  first16b & 0x3fff ;
-	// std::cout << "time: " << std::dec << timetick << std::endl;                          
-	//std::cout << "TPs:  " << amp << " tot: " << tot << " integral: " << intgrl << std::endl;    
-	prevadcval=baseline; //adcval;
-	//baseline=adcval;
-	//std::cout << "prev at start of waveform: " << prevadcval << std::endl;
-	//outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
+	//        std::cout << "time: " << std::dec << timetick << std::endl;                          
+	countadc=true;
+	//	std::cout << first16b << std::endl;
+	//	cout << "beginning of waveform: adcval, prevadcval, baseline: " << std::dec << adcval << " , " << prevadcval << " , " << baseline << endl;
+	//cout <<std::dec << timetick <<endl;
       }
 
+      else if (first16b>>12 == 0x3){
+        //std::cout << "End of waveform packet " <<std::hex <<  word32b << " , " << first16b << std::endl; 
+
+	adcval=(first16b & 0xfff);                          
+	//cout <<"End of waveform: adcval, prevadcval, baseline: "<< std::dec << adcval << " , " << prevadcval << " , " << static_cast<int>(adcval) - static_cast<int>(prevadcval) << endl;
+
+	tot=tot+1;
+        diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+	if(diffcheck > limit) {
+
+	  diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	  nearestPower = nearestPowerOf2(diff);                                                                                                                                                                              
+	  adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));	 
+	  diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+	  if(diffcheck > limit1) {
+
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+	    prevprevadcval=prevadcval;
+	    prevadcval=adcval;
+	    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	    outFile.flush();
+
+	  }
+
+	  else if(diffcheck < -limit1) {
+
+            diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+            nearestPower = nearestPowerOf2(diff);
+            adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+            prevprevadcval=prevadcval;
+            prevadcval=adcval;
+            adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+            outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+            outFile.flush();
+
+          }
+
+
+	  else{
+	    prevprevadcval=prevadcval;
+            prevadcval=adcval;
+            adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+            outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+            outFile.flush();
+
+
+
+	  }
+	}
+
+
+	else if(diffcheck < -limit) {
+
+          diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+          nearestPower = nearestPowerOf2(diff);
+          adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+          diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);
+
+          if(diffcheck < -limit1) {
+
+            diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+            nearestPower = nearestPowerOf2(diff);
+            adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+            prevprevadcval=prevadcval;
+            prevadcval=adcval;
+            adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+            outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+            outFile.flush();
+
+          }
+
+	  else if(diffcheck > limit1) {
+
+            diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+            nearestPower = nearestPowerOf2(diff);
+            adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+            prevprevadcval=prevadcval;
+            prevadcval=adcval;
+            adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+            outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+            outFile.flush();
+
+          }
+
+          else{
+            prevprevadcval=prevadcval;
+            prevadcval=adcval;
+            adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+            outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+            outFile.flush();
+
+
+
+          }
+	}
+
+
+
+	  else{
+	    prevprevadcval=prevadcval;
+	    prevadcval=adcval; 
+	    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	    //	    cout << "adcval, prevadcval,adcvalrem " << adcval << "\t" << prevadcval << "\t" << adcvalremainder << endl; 
+	    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+	    outFile.flush();
+	  
+	  }
+    
+      	
+        if(adcvalremainder>amp){
+	   amp=adcvalremainder;
+	   //	   if(amp>120 or amp<35){
+	   // amp = adjustAmp(amp); // rand() % 71 + 30;
+	   //adcvalremainder=amp;
+	     
+	     //adcvalremainder=60;
+	   }
+	 
+	 intgrl +=adcvalremainder;
+
+	 /*	 if(adcval>amp){
+           amp=adcval;
+         }
+         intgrl +=adcval;
+	 */
+	  if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1 and tot>totval){
+	    std::cout <<"************* First 16 bits loop *********" << std::endl;
+	    std::cout << "Check Frame: " <<std::dec << frame4 << std::endl; //hex_to_decimal_32u(frame4) << std::endl;                                                       
+	    std::cout << "FEM number : " << std::dec << fem << std::endl;
+	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
+	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
+	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
+	    std::cout << "Amp: " << std::dec  << amp << std::endl;
+	    std::cout << "tot: " <<  tot << std::endl;
+	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
+	    std::cout << "time: " << std::dec << timetick << std::endl;
+	                                                                                                                                                                     
+	    if(channel>31 and channel<64){                                                                                                                                   
+	      tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                                                                             
+	    }
+	  }
+     
+
+	samplecount++;
+	countadc=false;
+	//cout << "countadc false " << countadc << endl;                                                                                                                     
+      }
+
+	else if (first16b>>12 == 0x2){
+	  tot=tot+1;
+	  adcval=(first16b & 0xfff);
+
+	  diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+	  if(diffcheck > limit) {
+                     
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+	    if(diffcheck > limit1) {
+
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+	    else if(diffcheck < -limit1) {
+
+              diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+              nearestPower = nearestPowerOf2(diff);
+              adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+              prevprevadcval=prevadcval;
+              prevadcval=adcval;
+              adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+              outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+              outFile.flush();
+
+            }
+
+	    else{
+		  prevprevadcval=prevadcval;
+		  prevadcval=adcval;
+		  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		  outFile.flush();
+		}
+	  }
+
+
+	  else if(diffcheck < -limit) {
+
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);
+
+	    if(diffcheck < -limit1) {
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+
+	    else if(diffcheck > limit1) {
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+
+	    else{
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+
+
+	    }
+	  }
+
+
+
+	    else{
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      //      cout << "adcval, prevadcval,adcvalrem " << adcval << "\t" << prevadcval << "\t" << adcvalremainder << endl;                                                                                   
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+
+
+	  
+	  /*
+	  if(adcval>amp){
+	    amp=adcval;
+	  }
+	  intgrl +=adcval;
+
+
+	  */
+	  if(adcvalremainder>amp){
+	    amp=adcvalremainder;
+	    //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                          
+	    //  if(amp>120 or amp<35){
+	    //amp =  adjustAmp(amp); // rand() % 71 + 30;
+	    // adcvalremainder=amp;
+	      //	      amp=60;
+	      //adcvalremainder=60;
+	    //}
+                                                               
+	  }
+	  intgrl +=adcvalremainder;
+	 
+
+	  samplecount++;
+	}
+
+	// Check for Huffman-Coded Data Word: 0b1???????????????                                                                                                      
+      //   if (static_cast<uint16_t>(first16b & 0x8000) == static_cast<uint16_t>(0x8000)) {                                                                      
+        //      else if ((static_cast<uint16_t>(first16b) & 0x8000) == 0x8000) {                                                                                       
+	else if ((first16b & 0x8000) == 0x8000) { // Top bit is "1" \                                                                                           
+	//else if ((first16b & 0x8000) != 0) { 
+	  //	  cout <<" f huffman"<<endl;
+   uint16_t huffmanData = first16b & 0x7FFF; // Extract the 15 lower bits                                                                                       \
+ 
+   std::string binary = std::bitset<15>(huffmanData).to_string();
+   //   std::cout << "Binary (before reverse): " << binary << std::endl;
+
+   std::reverse(binary.begin(), binary.end());
+   //   std::cout << "Binary (after reverse):  " << binary << std::endl;
+	  size_t pos = 0;
+
+	  while (pos < binary.size()) {
+	    if (binary[pos] == '1') {
+	      //	      std::cout << "Found '1' at position: " << pos << "\n";
+
+	      // Count consecutive zeros after the current '1'
+	      int zeroCount = 0;
+	      size_t nextPos = pos + 1;
+	      while (nextPos < binary.size() && binary[nextPos] == '0') {
+                ++zeroCount;
+                ++nextPos;
+	      }
+
+
+	      switch (zeroCount) {
+	      case 0: adcdiff.emplace_back(0); break;  // 1
+	      case 1: adcdiff.emplace_back(-1); break; // 01
+	      case 2: adcdiff.emplace_back(+1); break; // 001
+	      case 3: adcdiff.emplace_back(-2); break; // 0001
+	      case 4: adcdiff.emplace_back(+2); break; // 00001
+	      case 5: adcdiff.emplace_back(-3); break; // 000001
+	      case 6: adcdiff.emplace_back(+3); break; // 0000001
+	      default: break; // Ignore if zeroCount exceeds the pattern
+	      }
+
+	      // Move position to the next '1' or end of the zeros
+	      pos = nextPos;
+	    } else {
+	      // Skip over '0's that are not after a '1'
+	      //std::cout << "Skipping '0' at position: " << pos << "\n";
+	      ++pos;
+	    }
+	  }
+	  // std::cout << adcdiff.size() << std::endl;
+
+	  for (int d : adcdiff){
+	    adcval += d;
+	    tot=tot+1;
+
+	    //std::cout << "H1 adc value: " << std::dec << adcval << " \t" << prevadcval << std::endl;
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+	    if(diffcheck > limit) {
+                       
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+
+	      diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+	      if(diffcheck > limit1) {
+
+		diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		nearestPower = nearestPowerOf2(diff);
+		adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+		prevprevadcval=prevadcval;
+		prevadcval=adcval;
+		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		outFile.flush();
+
+	      }
+
+	     else if(diffcheck < -limit1) {
+
+		  diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		  nearestPower = nearestPowerOf2(diff);
+		  adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+		  prevprevadcval=prevadcval;
+		  prevadcval=adcval;
+		  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		  outFile.flush();
+
+		}
+
+	      else{
+		    prevprevadcval=prevadcval;
+		    prevadcval=adcval;
+		    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		    outFile.flush();
+		  }
+	    }
+	    
+
+
+	    else if(diffcheck < -limit) {
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	      diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);
+
+	      if(diffcheck < -limit1) {
+
+		diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		nearestPower = nearestPowerOf2(diff);
+		adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+		prevprevadcval=prevadcval;
+		prevadcval=adcval;
+		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		outFile.flush();
+
+	      }
+	      else if(diffcheck > limit1) {
+
+                diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+                nearestPower = nearestPowerOf2(diff);
+                adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+                prevprevadcval=prevadcval;
+                prevadcval=adcval;
+                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+                outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+                outFile.flush();
+
+              }
+
+	      else{
+		prevprevadcval=prevadcval;
+		prevadcval=adcval;
+		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		outFile.flush();
+
+
+
+	      }
+	    }
+
+
+
+
+	      else{
+		prevprevadcval=prevadcval;
+		prevadcval=adcval;
+		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		//     cout << "adcval, prevadcval,adcvalrem " << adcval << "\t" << prevadcval << "\t" << adcvalremainder << endl;                                                                                   
+		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+		outFile.flush();
+
+	      }
+	    
+
+	    /*   if(adcval>amp){
+	      amp=adcval;
+	    }
+	    intgrl +=adcval;
+
+
+	    */
+	    if(adcvalremainder>amp){
+	      amp=adcvalremainder;
+                     
+	      //  if(amp>120 or amp<35){
+	      //amp =  adjustAmp(amp); //rand() % 71 + 30;
+	      // adcvalremainder=amp;
+		//		amp=60;
+		//adcvalremainder=60;
+	      //}
+      
+	    }
+	    intgrl +=adcvalremainder;
+
+
+		samplecount++;
+	  }
+	  adcdiff.clear();
+	}
+
+  
       if(last16b>>12 == 0x1){
-        channel = (last16b & 0x3f);
-        //std::cout <<  "Channel Number: " << std::dec << channel << std::endl;                                                                                                                                                      
+	//	std::cout <<  "hex last Channel Number: " << std::hex << last16b << std::endl;
+	channel = (last16b & 0x3f);
+	//std::cout << last16b << std::endl;
+
+        //std::cout <<  "last Channel Number: " << std::dec << channel << std::endl;                                                                                                                                                      
         //std::cout << CRATE << std::endl;                                                                                                                                                                                           
         mappedchannel = returnWire(CRATE,fem,channel,holdChMapIds);
 	//std::cout <<  "larsoft Channel Number: " << " \t" << mappedchannel << std::endl;
         //std::cout << "Start of channel : " << std::dec << channel << std::endl;                                                                                                                                                    
 	baseline = returnbaseline(myseb,fem,channel,holdsebpeds);
-	//std::cout <<  "Pedestal for channel is:  " << std::dec << baseline << std::endl;
+	//	std::cout <<  "Pedestal for channel is:  " << std::dec << baseline << std::endl;
 
-
+	prevadcval=baseline;
+	prevprevadcval=baseline;
 
         tot=0;
         intgrl=0;
@@ -1185,1065 +1722,538 @@ int main(int argc, char** argv){
         //baseline=adcval;
 	//outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
       }
-
      
-      else if (last16b>>14 == 01){
-	//	cout <<" ******* last beg. of waveform " <<endl;
+     
+      else if ((last16b & 0xC000) == 0x4000){ //      else if (last16b>>14 == 01){
+	//cout <<" ******* last beg. of waveform " << std::hex << last16b << endl;
 	//cout << "TP: "<< std::dec  << tot<< " , " << amp<< " , " << intgrl << endl;
         proceed=true;
-	//if(proceed==true){                                               
-
-	/*	if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){ // and amp<4097){                                                                                       	  std::cout <<"************* Last 16 bits loop *********" << std::endl;
-	  std::cout << "Check Frame: " << std::dec << frame4 << std::endl; //hex_to_decim                                                                          
-	  std::cout << "FEM number : " << std::dec << fem << std::endl;
-	  std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	  std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	  std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	  std::cout << "Final adc val: " << std::dec  << amp << std::endl;
-	  std::cout << "tot: " <<  tot << std::endl;
-	  std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	  std::cout << "time: " << std::dec << timetick << std::endl;
-
-          if(channel>31 and channel<64){
-            cout << "filling tplist" << endl;
-            tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                    
-          }
-	} 
-	*/                                                                                                                                                
     	tot=0;
         intgrl=0;
         amp=0;
 	samplecount=0;
 
 	timetick =  last16b & 0x3fff ;
-	prevadcval=baseline; //adcval;
+	//	cout << std::dec << timetick <<endl;
+	//	prevadcval=baseline; //adcval;
 	//	baseline=adcval;
 	//outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
+	//	tot=tot+1;
+        //cout <<"Tot count: " << std::dec << tot << endl;
+	//cout <<"Tot count: " << std::dec <<  channel << " , " << timetick << " , "  << tot << endl;
+
+	countadc=true;
+	//std::cout << last16b << std::endl;
+
+	//cout <<" l beginning of waveform: adcval, prevadcval, baseline: "<< std::dec << adcval << " , " << prevadcval << " , " << baseline << endl;
+	cout << std::dec << timetick << endl;
+
       }
 
-      if(proceed==true){ 
-      
-       if (first16b>>12 == 0x2){
-	tot+=1;
-	adcval=(first16b & 0xfff);
-	//std::cout << "ADC value a1: " << std::dec << adcval << std::endl;  
-	if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-	  diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-	  nearestPower = nearestPowerOf2(diff);
-	  //std::cout <<std::dec << "adc val a1: " << adcval << " \t" << prevadcval << std::endl;
-	  //std::cout << "diff a1: " << std::dec << diff << std::endl;
-	  //std::cout << "nearest power a: " << nearestPower << std::endl;
-	  adcval = abs(adcval-nearestPower);
-	  prevadcval=adcval;
-	  //std::cout << "new adc cval a1: " << std::dec << "adc: " <<adcval << " , baseline: " << baseline << std::endl;
-	  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << " 1 remainder: " << std::dec<< adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	  if(adcvalremainder>amp){
-	    amp=adcvalremainder;
-	    //std::cout << "Amplitude 1: " << amp << std::endl;
-	  }
-	  intgrl +=adcvalremainder;
-	}
+      //if(countadc==true){
+      else if (last16b>>12 == 0x2){
+	  tot=tot+1;
+	  adcval=(last16b & 0xfff);
+	  //std::cout << "l1 adc value: " << std::dec << adcval << " \t" << prevadcval << std::endl;
+	  //cout <<"L1 adcval, prevadcval, baseline: "<< std::dec << adcval << " , " << prevadcval << " , " << static_cast<int>(adcval) - static_cast<int>(prevadcval) << endl;
 
-	else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	  adcval=prevadcval; //adcval-10;                                                                                                                                   
-
-	  prevadcval=adcval;
-	  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "remainder: " << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-            //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                                           
-          }
-          intgrl +=adcvalremainder;
-
-	}
+	  diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
 
 
-	else{
-	  //adcval=(first16b & 0xfff);
-	  prevadcval=adcval;
-	  //std::cout << std::dec << "new adc a1 : " <<adcval << " , baseline: " << baseline << std::endl;
-	  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << " 1 remainder: " << std::dec << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-	    //std::cout << "Amplitude 1: " << amp<< std::endl;
-          }
-          intgrl +=adcvalremainder;
-
-	}
-	samplecount++;
-      }
-
-       else if (first16b>>15 == 1) {
-	int j=0;
-	for (int i = 0; i < 15; ++i) {
-	  if(((first16b >> i) & 1) == 1){
-	    j=i;
-	    if(((first16b >> j+1) & 1) == 0 and ((first16b >> j+2) & 1) == 0 and ((first16b >> j+3) & 1) == 0 and ((first16b >> j+4) & 1) == 0 and ((first16b>> j+5) & 1) == 0 and ((first16b >> j+6) & 1) == 0) {
-	      tot+=1;
-	      adcval=adcval+3;
-	      //  std::cout <<std::dec << "adc val a2: " << adcval << " \t" << prevadcval << std::endl;
-	      if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-		diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-		nearestPower = nearestPowerOf2(diff);
-		//std::cout <<std::dec << "adc val a2: " << adcval << " \t" << prevadcval << std::endl;
-		//std::cout << "diff a2: " << std::dec << diff << std::endl;
-
-		//	std::cout << "nearest power a2: " << nearestPower << std::endl;
-
-		adcval = abs(adcval-nearestPower);
-		prevadcval=adcval;
-		//std::cout << "new adc cval a2: " << std::dec << "adc: " <<adcval << " , baseline: " << baseline << std::endl;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	     	//std::cout << "2 remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-		  amp=adcvalremainder;
-		  //std::cout << "Amplitude 2: " << amp<< std::endl;
-		}
-		intgrl +=adcvalremainder;
-	      }
-
-	      else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-		adcval=prevadcval; //adcval-10;                                                                                                                                   
-		prevadcval=adcval;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "remainder: " << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-		  amp=adcvalremainder;
-		  //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                                           
-		}
-		intgrl +=adcvalremainder;
-
-	      }
+	  if(diffcheck > limit) {
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+	   
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
 
 
-	      else{
-		//adcval=(first16b & 0xfff);
-		prevadcval=adcval;
-		//std::cout << std::dec << "new adc a2 : " <<adcval << " , baseline: " << baseline << std::endl;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "2 remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-		  amp=adcvalremainder;
-		  //std::cout << "Amplitude 2: " << amp<< std::endl;
-		}
-		intgrl +=adcvalremainder;
-
-	      }
-	      samplecount++;
-	    }
-
-	    else if(((first16b >> j+1) & 1) == 0 and ((first16b >> j+2) & 1) == 0 and ((first16b >> j+3) & 1) == 0 and ((first16b >> j+4) & 1) == 0 and ((first16b>> j+5) & 1) == 0){
-              tot+=1;
-              adcval=adcval-3;
-	      //std::cout <<std::dec << "adc val a3: " << adcval << " \t" << prevadcval << std::endl;
-              if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-                diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-                nearestPower = nearestPowerOf2(diff);
-		//std::cout <<std::dec << "adc val a3: " << adcval << " \t" << prevadcval << std::endl;
-		//std::cout << "diff a3: " << std::dec << diff << std::endl;
-		//std::cout << "nearest power a3: " << nearestPower << std::endl;
-		adcval = abs(adcval-nearestPower);
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		//std::cout << "3 remainder: " << std::dec << adcvalremainder << std::endl;
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-		  //std::cout << "Amplitude 3: " << amp<< std::endl;
-                }
-                intgrl +=adcvalremainder;
-              }
-	      else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-		adcval=prevadcval; //adcval-10;                                                                                                                                   
-
-		prevadcval=adcval;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "remainder: " << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-		  amp=adcvalremainder;
-		  //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                                           
-		}
-		intgrl +=adcvalremainder;	      
-
-	      }
-
-              else{
-                //adcval=(first16b & 0xfff);
-                prevadcval=adcval;
-		//std::cout << std::dec << "new adc a3 : " <<adcval << " , baseline: " << baseline << std::endl;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "3 remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount <<  " \t" << adcvalremainder << " \n";
-		//		std::cout << "Amplitude 3: " << amp<< std::endl;
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-		  //std::cout << "Amplitude 3: " << amp<< std::endl;
-		}
-                intgrl +=adcvalremainder;
-
-              }
-              samplecount++;
-            }
-
-	    else if(((first16b >> j+1) & 1) == 0 and ((first16b >> j+2) & 1) == 0 and ((first16b >> j+3) & 1) == 0 and ((first16b >> j+4) & 1) == 0 ){
-	    tot+=1;
-	    adcval=adcval+2;
-	    //std::cout <<std::dec << "adc val a4: " << adcval << " \t" << prevadcval << std::endl;
-	    if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
+	    if(diffcheck > limit1) {
 	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
 	      nearestPower = nearestPowerOf2(diff);
-	      //std::cout <<std::dec << "adc val a4: " << adcval << " \t" << prevadcval << std::endl;
-	      //std::cout << "diff a4: " << std::dec << diff << std::endl;
-	      //std::cout << "nearest power a4: " << nearestPower << std::endl;
-	      adcval = abs(adcval-nearestPower);
+	      adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
 	      prevadcval=adcval;
 	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-	      //std::cout << "4 remainder: " << std::dec << adcvalremainder << std::endl;
-	      if(adcvalremainder>amp){
-		amp=adcvalremainder;
-		//std::cout << "Amplitude 4: " << amp<< std::endl;
-	      }
-	      intgrl +=adcvalremainder;
-	    }
-
-	    else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	      adcval=prevadcval; //adcval-10;                                                                                                                                                                                           
-
-	      prevadcval=adcval;
-	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	      //std::cout << "remainder: " << adcvalremainder << std::endl;
-	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	      if(adcvalremainder>amp){
-		amp=adcvalremainder;
-		//std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                                    \
-                                                                                                                                                                                                                                          
-	      }
-	      intgrl +=adcvalremainder;
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
 
 	    }
+
+	    else if(diffcheck < -limit1) {
+
+              diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+              nearestPower = nearestPowerOf2(diff);
+              adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+              prevprevadcval=prevadcval;
+              prevadcval=adcval;
+              adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+              outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+              outFile.flush();
+
+            }	    
 
 	    else{
-	      //adcval=(first16b & 0xfff);
+	      prevprevadcval=prevadcval;
 	      prevadcval=adcval;
-	      //std::cout << std::dec << "new adc a4 : " <<adcval << " , baseline: " << baseline << std::endl;
 	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	      //std::cout << "4 remainder: " << std::dec << adcvalremainder << std::endl;
-	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	      if(adcvalremainder>amp){
-		amp=adcvalremainder;
-		//std::cout << "Amplitude 4: " << amp<< std::endl;
-	      }
-	      intgrl +=adcvalremainder;
+                       
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+	      outFile.flush();
 
 	    }
-	    samplecount++;
-	    }
-
-	    else if(((first16b >> j+1) & 1) == 0 and ((first16b >> j+2) & 1) == 0 and ((first16b >> j+3) & 1) == 0){
-              tot+=1;
-              adcval=adcval-2;
-	      //std::cout <<std::dec << "adc val a5: " << adcval << " \t" << prevadcval << std::endl;
-              if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-                diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-                nearestPower = nearestPowerOf2(diff);
-		//std::cout <<std::dec << "adc val a5: " << adcval << " \t" << prevadcval << std::endl;
-		//std::cout << "diff a5: " << std::dec << diff << std::endl;
-		//std::cout << "nearest power a5: " << nearestPower << std::endl;
-                adcval = abs(adcval-nearestPower);
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "5 remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-		  // std::cout << "Amplitude 5: " << amp<< std::endl;
-}
-                intgrl +=adcvalremainder;
-              }
-
-              else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-                adcval=prevadcval; //adcval-10;                                                                                                                                                                                           
-
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "remainder: " << adcvalremainder << std::endl;
-                outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-                  //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                                                                                                                                                                                                                                             
-                }
-                intgrl +=adcvalremainder;
-
-              }
-
-
-              else{
-                //adcval=(first16b & 0xfff);
-                prevadcval=adcval;
-		//std::cout << std::dec << "new adc a5 : " <<adcval << " , baseline: " << baseline << std::endl;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	       	//std::cout << "5 remainder: " << std::dec <<  adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-		  //std::cout << "Amplitude 5: " << amp<< std::endl;
-                }
-                intgrl +=adcvalremainder;
-
-              }
-              samplecount++;
-            }
-
-	    else if(((first16b >> j+1) & 1) == 0 and ((first16b >> j+2) & 1) == 0){
-              tot+=1;
-              adcval=adcval+1;
-	      //std::cout <<std::dec << "adc val a6: " << adcval << " \t" << prevadcval << std::endl;
-              if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-                diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-                nearestPower = nearestPowerOf2(diff);
-		//std::cout <<std::dec << "adc val a6: " << adcval << " \t" << prevadcval << std::endl;
-		//std::cout << "diff a6: " << std::dec << diff << std::endl;
-		//std::cout << "nearest power a6: " << nearestPower << std::endl;
-		adcval = abs(adcval-nearestPower);
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		///	std::cout << "6 remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-		  //std::cout << "Amplitude 6: " << amp<< std::endl;
-}
-                intgrl +=adcvalremainder;
-              }
-
-              else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-                adcval=prevadcval; //adcval-10;                                                                                                                                                                                           
-
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "remainder: " << adcvalremainder << std::endl;
-                outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-                  //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                             \
-                                                                                                                                                                                                                              
-                }
-                intgrl +=adcvalremainder;
-
-              }
-
-
-              else{
-		// adcval=(first16b & 0xfff);
-                prevadcval=adcval;
-		//	std::cout << std::dec << "new adc a6 : " <<adcval << " , baseline: " << baseline << std::endl;
-		adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "6remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-		  //std::cout << "Amplitude 6: " << amp<< std::endl;
-                }
-                intgrl +=adcvalremainder;
-
-              }
-              samplecount++;
-            }
-
-	    else if(((first16b >> j+1) & 1) == 0){
-              tot+=1;
-              adcval=adcval-1;
-	      //std::cout <<std::dec << "adc val a7: " << adcval << " \t" << prevadcval << std::endl;
-              if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-                diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-                nearestPower = nearestPowerOf2(diff);
-		//std::cout <<std::dec << "adc val a7: " << adcval << " \t" << prevadcval << std::endl;
-		//std::cout << "diff a7: " << std::dec << diff << std::endl;
-		//std::cout << "nearest power a7: " << nearestPower << std::endl;
-		adcval = abs(adcval-nearestPower);
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//	std::cout << "7 adc: " << std::dec <<adcval << " , baseline7: " << baseline << std::endl;
-		//std::cout << "7 remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-                if(adcvalremainder>amp){ 
-                  amp=adcvalremainder;
-                }
-                intgrl +=adcvalremainder;
-              }
-
-              else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-                adcval=prevadcval; //adcval-10;                                                                                                                                                                                           
-
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-		//std::cout << "remainder: " << adcvalremainder << std::endl;
-                outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-		if(adcvalremainder>amp){
-                  amp=adcvalremainder;                                                                                                                                                                                             
-                }
-                intgrl +=adcvalremainder;
-
-              }
-
-
-              else{
-		//                adcval=(first16b & 0xfff);
-                prevadcval=adcval;
-                adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	       	//std::cout << "7 adc: " << std::dec << adcval << " , baseline7: " << baseline << std::endl;
-		//std::cout << "7remainder: " << std::dec << adcvalremainder << std::endl;
-		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-                if(adcvalremainder>amp){
-                  amp=adcvalremainder;
-                }
-                intgrl +=adcvalremainder;
-
-              }
-              samplecount++;
-            }
-	  }}}
-
-       else if (first16b>>12 == 0x3){
-	proceed=false; //sometimes, a word defiing beg. of waveform is missing which overwrite the TP valuest. this bool will contrlol that
-        tot+=1;
-        adcval=(first16b & 0xfff);
-	//	std::cout << "ADC amp: " << std::dec << adcval << std::endl;
-
-	//std::cout << "End of waveforme" << std::endl;
-
-        if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-          diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-          nearestPower = nearestPowerOf2(diff);
-	  //std::cout <<std::dec << "adc val a8: " << adcval << " \t" << prevadcval << std::endl;
-	  //std::cout << "diff a8: " << std::dec << diff << std::endl;
-	  //std::cout << "nearest power a8: " << nearestPower << std::endl;
-	  adcval = abs(adcval-nearestPower);
-          prevadcval=adcval;
-          adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	  // std::cout << "baseline: " << std::dec << baseline << std::endl;
-	  //std::cout << "8remainder: " << std::dec << adcvalremainder << std::endl;
-
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl +=adcvalremainder;
-	  //cout << "TP: " << std::dec  << tot<< " , " << amp<< " , " << intgrl << endl;
-         if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){
-	   std::cout <<"************* First 16 bits loop *********" << std::endl;
-	   std::cout << "Check Frame: " <<std::dec << frame4 << std::endl; //hex_to_decimal_32u(frame4) << std::endl;                                        
-	    std::cout << "FEM number : " << std::dec << fem << std::endl;
-	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	    std::cout << "Amp: " << std::dec  << amp << std::endl;
-	    std::cout << "tot: " <<  tot << std::endl;
-	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	    std::cout << "time: " << std::dec << timetick << std::endl;
-
-	    if(channel>31 and channel<64){
-	      cout << "filling tplist" <<endl;
-	      tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                            
-	    }
-	    }
-	 tot=0;
-	 amp=0;
-	 intgrl=0;
-        
-
-	}
-
-	else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	  adcval=prevadcval; //adcval-10;                                                                                                                                                                                           
-
-	  prevadcval=adcval;
-	  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "remainder: " << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	  if(adcvalremainder>amp){
-	    amp=adcvalremainder;
-	    //std::cout << "Amplitude 1: " << amp << std::endl;                                                                                                                                                                    \
-                                                                                                                                                                                                                                          
 	  }
-	  intgrl +=adcvalremainder;
-	  //cout << "TP: " << std::dec  << tot<< " , " << amp<< " , " << intgrl << endl;
-	  if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){
-	    std::cout <<"************* First 16 bits loop *********" << std::endl;
-	    std::cout << "Check Frame: " <<std::dec << frame4 << std::endl; //hex_to_decimal_32u(frame4) << std::endl;                                                                                                                    
-	    std::cout << "FEM number : " << std::dec << fem << std::endl;
-	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	    std::cout << "Amp: " << std::dec  << amp << std::endl;
-	    std::cout << "tot: " <<  tot << std::endl;
-	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	    std::cout << "time: " << std::dec << timetick << std::endl;
-
-            if(channel>31 and channel<64){
-              cout << "filling tplist" <<endl;
-              tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                                                                                            
-            }
-	  }
-	  tot=0;
-	  amp=0;
-	  intgrl=0;
-
-
-	}
-
-	else{
-          //adcval=(first16b & 0xfff);
-          prevadcval=adcval;
-          adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "8remainder: " << std::dec << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl +=adcvalremainder;
-	  //cout << "TP: " << std::dec  << tot<< " , " << amp<< " , " << intgrl << endl;
-	 if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){
-	    std::cout <<"************* First 16 bits loop *********" << std::endl;
-	    std::cout << "Check Frame: " <<std::dec << frame4 << std::endl; //hex_to_decimal_32u(frame4) << std::endl;                                       
-	    std::cout << "FEM number : " << std::dec << fem << std::endl;
-	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	    std::cout << "Final adc val: " << std::dec  << amp << std::endl;
-	    std::cout << "tot: " <<  tot << std::endl;
-	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	    std::cout << "time: " << std::dec << timetick << std::endl;
-
-	    if(channel>31 and channel<64){
-	      cout << "filling tplist" <<endl;
-	      tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                            
-	    }
-          }
 	  
-	 tot=0;
-	  amp=0;
-	 intgrl=0;
 
 
-	}
-	samplecount++;
-} 
-      
-      
-       if (last16b>>12 == 0x2){
-	tot+=1;
-	adcval=(last16b & 0xfff);
-	//std::cout <<std::dec << "adc val a10: " << adcval << " \t" << prevadcval << std::endl;
-	if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-	  diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-	  nearestPower = nearestPowerOf2(diff);
-	  //std::cout <<std::dec << "adc val a10: " << adcval << " \t" << prevadcval << std::endl;
-	  //std::cout << "diff a10: " << std::dec << diff << std::endl;
-	  //std::cout << "nearest power a10: " << nearestPower << std::endl;
-	  adcval = abs(adcval-nearestPower);
-	  prevadcval=adcval;
-	  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "10 adc: " << std::dec <<adcval << " , baseline 10: " << baseline << std::endl;
-	  //std::cout << "10 remainder: " << std::dec << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
+	  else if(diffcheck < -limit) {
 
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);
+
+	    if(diffcheck < -limit1) {
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+
+	    else if(diffcheck > limit1) {
+              diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+              nearestPower = nearestPowerOf2(diff);
+              adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+              prevadcval=adcval;
+              adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+              outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+              outFile.flush();
+
+            }
+
+	    else{
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+
+
+	    }
+	  }
+
+
+	  else{
+	    prevprevadcval=prevadcval;
+	    prevadcval=adcval;
+	    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+            
+	    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+	    outFile.flush();
+	    
+	  }
+
+	  /*	  if(adcval>amp){
+	    amp=adcval;
+	  }
+	  intgrl +=adcval;
+
+
+	  */
 	  if(adcvalremainder>amp){
 	    amp=adcvalremainder;
+	    //  if(amp>120 or amp<35){
+	    //amp =  adjustAmp(amp); // rand() % 71 + 30;
+	    //adcvalremainder=amp;
+	      //	      amp=60;
+	      //adcvalremainder=60;
+	    //    /}
+
 	  }
 	  intgrl += adcvalremainder;
-	}
-
-        else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-          adcval=prevadcval; //adcval-10;                                                                                                                                                                                                 
-
-          prevadcval=adcval;
-          adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "remainder: " << adcvalremainder << std::endl;
-          outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl +=adcvalremainder;
-	}
-	else{
-	  //adcval=(last16b & 0xfff);
-	  prevadcval=adcval;
- 	  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "10 adc: " << std::dec <<adcval << " , baseline 10: " << baseline << std::endl;
-	  //std::cout << "10 remainder: " << std::dec << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	  if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl += adcvalremainder;
-	}
-	samplecount++;
-     }
-
-       else if (last16b>>15 == 1) {
-       int j=0;
-       for (int i = 0; i < 15; ++i) {
-	 if(((last16b >> i) & 1) == 1){
-	   j=i;
-	   if(((last16b >> j+1) & 1) == 0 and ((last16b >> j+2) & 1) == 0 and ((last16b >> j+3) & 1) == 0 and ((last16b >> j+4) & 1) == 0 and ((last16b>> j+5) & 1) ==0 and ((last16b >> j+6) & 1) == 0) {
-	     tot+=1;
-	     adcval=adcval+3;
-	     // std::cout <<std::dec << "adc val a11: " << adcval << " \t" << prevadcval << std::endl;
-	     if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-	       diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-	       nearestPower = nearestPowerOf2(diff);
-	       //std::cout <<std::dec << "adc val a11: " << adcval << " \t" << prevadcval << std::endl;
-	       //std::cout << "diff a11: " << std::dec << diff << std::endl;
-	       //std::cout << "nearest power a11: " << nearestPower << std::endl;
-	       adcval = abs(adcval-nearestPower);
-	       prevadcval=adcval;
-	       adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	       outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-
-	       //	       std::cout << "11 adc: " << std::dec <<adcval << " , baseline 11: " << baseline << std::endl;
-	       //std::cout << "11 remainder: " << std::dec << adcvalremainder << std::endl;
-	       if(adcvalremainder>amp){
-		 amp=adcvalremainder;
-	       }
-	       intgrl += adcvalremainder;
-	     }
-
-	     else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	       adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
-
-	       prevadcval=adcval;
-	       adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	       //std::cout << "remainder: " << adcvalremainder << std::endl;
-	       outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	       if(adcvalremainder>amp){
-		 amp=adcvalremainder;
-	       }
-	       intgrl +=adcvalremainder;
-	     }
-
-	     else{
-	       //   adcval=(last16b & 0xfff);
-	       prevadcval=adcval;
-	       adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	       //std::cout << "11 adc: " << std::dec <<adcval << " , baseline 11: " << baseline << std::endl;
-	       //std::cout << "11 remainder: " << std::dec << adcvalremainder << std::endl;
-	       outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	       if(adcvalremainder>amp){
-		 amp=adcvalremainder;
-	       }
-	       intgrl += adcvalremainder;
-	     }
-	     samplecount++;
-	   }
-
-
-	   else if(((last16b >> j+1) & 1) == 0 and ((last16b >> j+2) & 1) == 0 and ((last16b >> j+3) & 1) == 0 and ((last16b >> j+4) & 1) == 0 and ((last16b>> j+5) & 1) == 0 ){
-	     tot+=1;
-	     adcval=adcval-3;
-	     // std::cout <<std::dec << "adc val a12: " << adcval << " \t" << prevadcval << std::endl;
-	   if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-	     diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-	     nearestPower = nearestPowerOf2(diff);
-	     // std::cout <<std::dec << "adc val a12: " << adcval << " \t" << prevadcval << std::endl;
-	     //std::cout << "diff a12: " << std::dec << diff << std::endl;
-	     //std::cout << "nearest power a12: " << nearestPower << std::endl;
-
-	     adcval = abs(adcval-nearestPower);
-	     prevadcval=adcval;
-	     adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	     outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-	     //std::cout << "12 adc: " << std::dec <<adcval << " , baseline 12: " << baseline << std::endl;
-	     //std::cout << "12 remainder: " << std::dec << adcvalremainder << std::endl;
-
-	     if(adcvalremainder>amp){
-	       amp=adcvalremainder;
-	     }
-	     intgrl += adcvalremainder;
-	   }
-
-	   else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	     adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
-
-	     prevadcval=adcval;
-	     adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	     // std::cout << "remainder: " << adcvalremainder << std::endl;
-	     outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	     if(adcvalremainder>amp){
-	       amp=adcvalremainder;
-	     }
-	     intgrl +=adcvalremainder;
-	   }
-
-
-	   else{
-	     //adcval=(last16b & 0xfff);
-	     prevadcval=adcval;
-	     adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	     //std::cout << "12 adc: " << std::dec <<adcval << " , baseline 12: " << baseline << std::endl;
-	     //std::cout << "12 remainder: " << std::dec << adcvalremainder << std::endl;
-	     outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-
-	     if(adcvalremainder>amp){
-	       amp=adcvalremainder;
-	     }
-	     intgrl += adcvalremainder;
-	   }
-	   samplecount++;
-	   }
-
-	   else if(((last16b >> j+1) & 1) == 0 and ((last16b >> j+2) & 1) == 0 and ((last16b >> j+3) & 1) == 0 and ((last16b >> j+4) & 1) == 0 ){
-	 tot+=1;
-	 adcval=adcval+2;
-	 //std::cout <<std::dec << "adc val a13: " << adcval << " \t" << prevadcval << std::endl;
-	 if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-	   diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-	   nearestPower = nearestPowerOf2(diff);
-	   //std::cout <<std::dec << "adc val a13: " << adcval << " \t" << prevadcval << std::endl;
-	   //std::cout << "diff a13: " << std::dec << diff << std::endl;
-	   //std::cout << "nearest power a13: " << nearestPower << std::endl;
-	   adcval = abs(adcval-nearestPower);
-	   prevadcval=adcval;
-	   adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	   //std::cout << "13 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-	   //std::cout << "13 remainder: " << std::dec << adcvalremainder << std::endl;
-	   outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-
-	   if(adcvalremainder>amp){
-	     amp=adcvalremainder;
-	   }
-	   intgrl += adcvalremainder;
-	 }
-
-	 else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	   adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
-
-	   prevadcval=adcval;
-	   adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	   //std::cout << "remainder: " << adcvalremainder << std::endl;
-	   outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	   if(adcvalremainder>amp){
-	     amp=adcvalremainder;
-	   }
-	   intgrl +=adcvalremainder;
-	 }
-
-
-	 else{
-	   //adcval=(last16b & 0xfff);
-	   prevadcval=adcval;
-	   adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	   //std::cout << "13 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-	   //std::cout << "13 remainder: " << std::dec << adcvalremainder << std::endl;
-	   outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	   if(adcvalremainder>amp){
-	     amp=adcvalremainder;
-	   }
-	   intgrl += adcvalremainder;
-	 }
-	 samplecount++;
-       }
-
-	   else if(((last16b >> j+1) & 1) == 0 and ((last16b >> j+2) & 1) == 0 and ((last16b >> j+3) & 1) == 0){
-       tot+=1;
-       adcval=adcval-2;
-       //std::cout <<std::dec << "adc val a14: " << adcval << " \t" << prevadcval << std::endl;
-       if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-	 diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-	 nearestPower = nearestPowerOf2(diff);
-	 //std::cout <<std::dec << "adc val a14: " << adcval << " \t" << prevadcval << std::endl;
-	 // std::cout << "diff a14: " << std::dec << diff << std::endl;
-	 //std::cout << "nearest power a14: " << nearestPower << std::endl;
-	 adcval = abs(adcval-nearestPower);
-	 prevadcval=adcval;
-	 adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	 //std::cout << "14 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-	 //std::cout << "14 remainder: " << std::dec << adcvalremainder << std::endl;
-	 outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	 if(adcvalremainder>amp){
-	   amp=adcvalremainder;
-	 }
-	 intgrl += adcvalremainder;
-       }
-
-       else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-	 adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
-
-	 prevadcval=adcval;
-	 adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	 //std::cout << "remainder: " << adcvalremainder << std::endl;
-	 outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	 if(adcvalremainder>amp){
-	   amp=adcvalremainder;
-	 }
-	 intgrl +=adcvalremainder;
-       }
-
-
-       else{
-	 //adcval=(last16b & 0xfff);
-	 prevadcval=adcval;
-	 adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	 //std::cout << "14 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-	 //std::cout << "14 remainder: " << std::dec << adcvalremainder << std::endl;
-	 outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-	 if(adcvalremainder>amp){
-	   amp=adcvalremainder;
-	 }
-	 intgrl += adcvalremainder;
-       }
-       samplecount++;
-	   }
-
-	   else if(((last16b >> j+1) & 1) == 0 and ((last16b >> j+2) & 1) == 0 ){
-     tot+=1;
-     adcval=adcval+1;
-     //     std::cout <<std::dec << "adc val a15: " << adcval << " \t" << prevadcval << std::endl;
-
-     if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-       diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-       nearestPower = nearestPowerOf2(diff);
-       //std::cout <<std::dec << "adc val a15: " << adcval << " \t" << prevadcval << std::endl;
-       //std::cout << "diff a15: " << std::dec << diff << std::endl;
-       //std::cout << "nearest power a15: " << nearestPower << std::endl;
-       adcval = abs(adcval-nearestPower);
-       prevadcval=adcval;
-       adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-       /// std::cout << "15 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-       //std::cout << "15 remainder: " << std::dec << adcvalremainder << std::endl;
-       outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-       if(adcvalremainder>amp){
-	 amp=adcvalremainder;
-       }
-       intgrl += adcvalremainder;
-     }
-
-     else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-       adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
-
-       prevadcval=adcval;
-       adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-       //std::cout << "remainder: " << adcvalremainder << std::endl;
-       outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-       if(adcvalremainder>amp){
-	 amp=adcvalremainder;
-       }
-       intgrl +=adcvalremainder;
-     }
-
-
-     else{
-       //adcval=(last16b & 0xfff);
-       prevadcval=adcval;
-       adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-       // std::cout << "15 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-       //std::cout << "15 remainder: " << std::dec << adcvalremainder << std::endl;
-       outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-       if(adcvalremainder>amp){
-	 amp=adcvalremainder;
-       }
-       intgrl += adcvalremainder;
-     }
-     samplecount++;
-    }
-
-	   else if(((last16b >> j+1) & 1) == 0){
-    tot+=1;
-    adcval=adcval-1;
-    //std::cout <<std::dec << "adc val a16: " << adcval << " \t" << prevadcval << std::endl;
-
-    if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-      nearestPower = nearestPowerOf2(diff);
-      //std::cout <<std::dec << "adc val a16: " << adcval << " \t" << prevadcval << std::endl;
-      //std::cout << "diff a16: " << std::dec << diff << std::endl;
-      //std::cout << "nearest power a16: " << nearestPower << std::endl;
-      adcval = abs(adcval-nearestPower);
-      prevadcval=adcval;
-      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-      //std::cout << "16 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-      //std::cout << "16 remainder: " << std::dec << adcvalremainder << std::endl;
-      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-      if(adcvalremainder>amp){
-	amp=adcvalremainder;
-      }
-      intgrl += adcvalremainder;
-    }
-    else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-      adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
-
-      prevadcval=adcval;
-      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-      //std::cout << "remainder: " << adcvalremainder << std::endl;
-      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-      if(adcvalremainder>amp){
-	amp=adcvalremainder;
-      }
-      intgrl +=adcvalremainder;
-    }
-
-    else{
-      //adcval=(last16b & 0xfff);
-      prevadcval=adcval;
-      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-      // std::cout << "16 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-      //std::cout << "16 remainder: " << std::dec << adcvalremainder << std::endl;
-      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-      if(adcvalremainder>amp){
-	amp=adcvalremainder;
-      }
-      intgrl += adcvalremainder;
-    }
-    samplecount++;
-	   }
-	 }}}
-       else if (last16b>>12 == 0x3){
-       cout << " ***** last end of waveform " << endl;
-       proceed=false;
-       tot+=1;
-	adcval=(last16b & 0xfff);
-	//std::cout <<std::dec << "adc val a17: " << adcval << " \t" << prevadcval << std::endl;
-	if (abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit) {
-          diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
-          nearestPower = nearestPowerOf2(diff);
-	  //std::cout <<std::dec << "adc val a17: " << adcval << " \t" << prevadcval << std::endl;
-	  //std::cout << "diff a17: " << std::dec << diff << std::endl;
-	  //std::cout << "nearest power a17: " << nearestPower << std::endl;
-          adcval = abs(adcval-nearestPower);
-          prevadcval=adcval;
-          adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  //std::cout << "17 adc: " << std::dec <<adcval << " , baseline: " << baseline << std::endl;
-	  //std::cout << "17 remainder: " << std::dec << adcvalremainder << std::endl;
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl += adcvalremainder;
-	   cout << "last TP: " << std::dec  << tot << " , " << amp << " , " << intgrl << endl;
-	   if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){
-	    std::cout <<"************* Last 16 bits loop *********" << std::endl;
-	    std::cout << "Check Frame: " << std::dec << frame4 << std::endl; //hex_to_decim                                                                                                                     
-	    std::cout << "FEM number : " << std::dec << fem << std::endl;
-	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	    std::cout << "Final adc val: " << std::dec  << amp << std::endl;
-	    std::cout << "tot: " <<  tot << std::endl;
-	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	    std::cout << "time: " << std::dec << timetick << std::endl;
-
-	    if(channel>31 and channel<64){
-	      cout << "filling tplist" << endl;
-	      tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                                                                  
-	    }
-          }
 	 
-	   tot=0;
-	   amp=0;
-	   intgrl=0;
+	  samplecount++;
+      }
 
-	}
+      else if ((last16b & 0x8000) != 0) { 
+	//       if (static_cast<uint16_t>(first16b & 0x8000) == static_cast<uint16_t>(0x8000)) { 
+	//      else if ((static_cast<uint16_t>(first16b) & 0x8000) == 0x8000) { 
+      //	else if ((last16b & 0x8000) == 0x8000) { // Top bit is "1" \
+	// cout <<"huffman"<<endl;           
+	  uint16_t huffmanData = last16b & 0x7FFF; // Extract the 15 lower bits                                                                                                            
+	  std::string binary = std::bitset<15>(huffmanData).to_string();
+	  // std::cout << "Binary (before reverse): " << binary << std::endl;
 
-        else if(abs(static_cast<int>(adcval) - static_cast<int>(prevadcval)) > limit2) {
-          adcval=prevadcval; //adcval-10;                                                                                                                                                                                                                     
+	  std::reverse(binary.begin(), binary.end());
+	  //std::cout << "Binary (after reverse):  " << binary << std::endl;
 
-          prevadcval=adcval;
-          adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  // std::cout << "remainder: " << adcvalremainder << std::endl;
-          outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl +=adcvalremainder;
-	  cout << "last TP: " << std::dec  << tot << " , " << amp << " , " << intgrl << endl;
-	  if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){
-	    std::cout <<"************* Last 16 bits loop *********" << std::endl;
-	    std::cout << "Check Frame: " << std::dec << frame4 << std::endl; //hex_to_decim                                                                                                                                                                   
-	    std::cout << "FEM number : " << std::dec << fem << std::endl;
-	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	    std::cout << "Final adc val: " << std::dec  << amp << std::endl;
-	    std::cout << "tot: " <<  tot << std::endl;
-	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	    std::cout << "time: " << std::dec << timetick << std::endl;
+          size_t pos = 0;
 
-            if(channel>31 and channel<64){
-              cout << "filling tplist" << endl;
-              tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                                                                                                                
+          while (pos < binary.size()) {
+            if (binary[pos] == '1') {
+              int zeroCount = 0;
+              size_t nextPos = pos + 1;
+              while (nextPos < binary.size() && binary[nextPos] == '0') {
+                ++zeroCount;
+                ++nextPos;
+              }
+
+
+              switch (zeroCount) {
+              case 0: adcdiff.emplace_back(0); break;                                                                                                                                                                                                         
+              case 1: adcdiff.emplace_back(-1); break;
+              case 2: adcdiff.emplace_back(+1); break;
+              case 3: adcdiff.emplace_back(-2); break;
+              case 4: adcdiff.emplace_back(+2); break;
+              case 5: adcdiff.emplace_back(-3); break;
+              case 6: adcdiff.emplace_back(+3); break;
+              default: break;                   
+              }
+                                                
+              pos = nextPos;
+            } else {
+              ++pos;
             }
           }
 
-	  tot=0;
-	  amp=0;
-	  intgrl=0;
-        }
+	  cout <<adcdiff.size()<<endl;
+          for (int d : adcdiff){
+		adcval += d;
+		tot=tot+1;
+		//	cout <<"LH1 adcval, prevadcval, baseline: "<< std::dec << adcval << " , " << prevadcval << " , " << static_cast<int>(adcval) - static_cast<int>(prevadcval) << endl;
+
+		//std::cout << "hl1 adc value: " << std::dec << adcval << " \t" << prevadcval << std::endl;
+
+		diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
 
 
-	else{
-	  //  adcval=(last16b & 0xfff);
-          prevadcval=adcval;
-          adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
-	  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcvalremainder << " \n";
-          if(adcvalremainder>amp){
-            amp=adcvalremainder;
-          }
-          intgrl += adcvalremainder;
-	  //cout << "last TP: " << std::dec  << tot << " , " << amp << " , " << intgrl << endl;
-	 
+		if(diffcheck > limit) {
+		  diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		  nearestPower = nearestPowerOf2(diff);
+		  adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+		  diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+		  if(diffcheck > limit1) {
+
+		    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		    nearestPower = nearestPowerOf2(diff);
+		    adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+		    prevadcval=adcval;
+		    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		    outFile.flush();
+
+		  }
+
+		  else if(diffcheck < -limit1) {
+
+                    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+                    nearestPower = nearestPowerOf2(diff);
+                    adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+                    prevprevadcval=prevadcval;
+                    prevadcval=adcval;
+                    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+                    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+                    outFile.flush();
+
+                  }
+
+		  else{
+		    prevprevadcval=prevadcval;
+		    prevadcval=adcval;
+		    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+                             
+		    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+		    outFile.flush();
+
+		  }
+			}
+
+
+
+		else if(diffcheck < -limit) {
+
+		  diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		  nearestPower = nearestPowerOf2(diff);
+		  adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+		  diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);
+
+		  if(diffcheck < -limit1) {
+
+		    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+		    nearestPower = nearestPowerOf2(diff);
+		    adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+		    prevprevadcval=prevadcval;
+		    prevadcval=adcval;
+		    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		    outFile.flush();
+
+		  }
+
+		  else if(diffcheck > limit1) {
+
+                    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+                    nearestPower = nearestPowerOf2(diff);
+                    adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+                    prevadcval=adcval;
+                    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+                    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+                    outFile.flush();
+
+                  }
+
+		  else{
+		    prevprevadcval=prevadcval;
+		    prevadcval=adcval;
+		    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+		    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+		    outFile.flush();
+
+
+
+		  }
+		}
+
+
+			else{
+			  prevprevadcval=prevadcval;
+			  prevadcval=adcval;
+			  adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+			  outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+			  outFile.flush();
+
+			}
 	  
-	  if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1){
-	    std::cout <<"************* Last 16 bits loop *********" << std::endl;
-	    std::cout << "Check Frame: " << std::dec << frame4 << std::endl; //hex_to_decim                                                                                                                     
-	    std::cout << "FEM number : " << std::dec << fem << std::endl;
-	    std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
-	    std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
-	    std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
-	    std::cout << "Final adc val: " << std::dec  << amp << std::endl;
-	    std::cout << "tot: " <<  tot << std::endl;
-	    std::cout << "intgrl: " << std::dec << intgrl << std::endl;
-	    std::cout << "time: " << std::dec << timetick << std::endl;
 
-	    if(channel>31 and channel<64){
-	      cout << "filling tplist" << endl;
-	      tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                                                                  
-	    }
-          }
-	  
-	  tot=0;
-          amp=0;
-          intgrl=0;
+		  if(adcvalremainder>amp){
+		    amp=adcvalremainder;
+		    //if(amp>120 or amp<35){
+		      //amp =  adjustAmp(amp) ; //rand() % 71 + 30;
+		      //adcvalremainder=amp;
+		      //		      amp=60;
+		      //adcvalremainder=60;
+		      //}
 
-	}
-	samplecount++;
-    
-     }} 
-else{
-	continue;
+
+		  }
+		  intgrl +=adcvalremainder;
+		       
+		  /*	if(adcval>amp){
+			  amp=adcval;
+			}
+			intgrl +=adcval;
+
+		  */
+
+
+			//		outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << "\t" << adcvalremainder << " \n";
+		samplecount++;
+	  }
+	  adcdiff.clear();
       }
-      
+
+	//} //end countadc true condition
+
+
+      else if (last16b>>12 == 0x3){
+          adcval=(last16b & 0xfff);
+	  //std::cout << "End of waveform packet with adc value: " << std::dec << adcval << " \t" << prevadcval << std::endl;
+          tot=tot+1;
+	 
+	  //cout <<"L End of waveform: adcval, prevadcval, baseline: "<< std::dec << adcval << " , " << prevadcval << " , " << static_cast<int>(adcval) - static_cast<int>(prevadcval) << endl;
+
+	  diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+	  if(diffcheck > limit) {	                         
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);  
+
+
+	    if(diffcheck > limit1) {
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+
+	    else if(diffcheck < -limit1) {
+
+              diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+              nearestPower = nearestPowerOf2(diff);
+              adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+              prevprevadcval=prevadcval;
+              prevadcval=adcval;
+              adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+              outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+              outFile.flush();
+
+            }
+
+	    else{
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+                                 
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }}
+
+
+
+	  else if(diffcheck < -limit) {
+
+	    diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	    nearestPower = nearestPowerOf2(diff);
+	    adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	    diffcheck=static_cast<int>(adcval) - static_cast<int>(prevadcval);
+
+	    if(diffcheck < -limit1) {
+
+	      diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+	      nearestPower = nearestPowerOf2(diff);
+	      adcval = abs(static_cast<int>(adcval)+static_cast<int>(nearestPower));
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+	    }
+
+	    else if(diffcheck > limit1) {
+
+              diff = abs(static_cast<int>(adcval) - static_cast<int>(prevadcval));
+              nearestPower = nearestPowerOf2(diff);
+              adcval = abs(static_cast<int>(adcval)-static_cast<int>(nearestPower));
+              prevprevadcval=prevadcval;
+              prevadcval=adcval;
+              adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+              outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+              outFile.flush();
+
+            }
+
+	    else{
+	      prevprevadcval=prevadcval;
+	      prevadcval=adcval;
+	      adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	      outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount << " \t" << adcval << " \t" << adcvalremainder << " \n";
+	      outFile.flush();
+
+
+
+	    }
+	  }
+
+
+
+	  else{
+	    prevprevadcval=prevadcval;
+	    prevadcval=adcval;
+	    adcvalremainder=std::abs(static_cast<int>(adcval)-static_cast<int>(baseline));
+	    outFile << frame4 << " \t" << fem << " \t" << channel << " \t" << timetick << " \t" << samplecount  << " \t" << adcval << "\t" << adcvalremainder << " \n";
+	    outFile.flush();
+	  }
+	  
+	  
+           if(adcvalremainder>amp){
+              amp=adcvalremainder;
+	      //	      if(amp>120 or amp<35){
+
+	      //amp =  adjustAmp(amp); // rand() % 71 + 30; 
+	      //	adcvalremainder=amp;
+
+	      //}
+           
+ }
+            intgrl += adcvalremainder;
+	  
+	    /*
+	  if(adcval>amp){
+	    amp=adcval;
+	  }
+	  intgrl +=adcval;
+	    */
+
+
+            if(tot!=0 and amp!=0 and intgrl!=0 and frame4>1 and tot>totval){
+	      std::cout <<"************* Last 16 bits loop *********" << std::endl;
+	      std::cout << "Check Frame: " << std::dec << frame4 << std::endl; 
+	      std::cout << "FEM number : " << std::dec << fem << std::endl;
+	      std::cout <<  " Channel Number: " << std::dec << channel << std::endl;
+	      std::cout << "ChannelMap : "<< CRATE << " , " << fem << " , " << channel << std::endl;
+	      std::cout << "mapped wire: " << std::dec << mappedchannel << std::endl;
+	      std::cout << "Final adc val: " << std::dec  << amp << std::endl;
+	      std::cout << "tot: " <<  tot << std::endl;
+	      std::cout << "intgrl: " << std::dec << intgrl << std::endl;
+	      std::cout << "time: " << std::dec << timetick << std::endl;
+              if(channel>31 and channel<64){
+                tp_list.emplace_back(minFrame,frame4,fem,mappedchannel,timetick,tot,amp,intgrl); //,run,subrun);                                                                                                                                                    
+              }
+
+            }
+	   
+
+          samplecount++;
+	
+
+        countadc=false;
+	//cout << "count adc is false" << endl;   
+      }
+   
+	      
+     else{
+       	continue;
+     }
+         
+       word_count++;
+   
+      }} //    std::cout << "FlipBit frequency: " << countFlipBit << std::endl;
+  }
+
+    binFile.close();
+ }
+
+ return 0;
+}
+
+
+/*
+
 
      //}
-    }
+   
     word_count++;
-  }//closed while loop on reading a binary file                                                                                                                                                                                                                      
-
-  binFile.close();
-  //  }// close loop on binary files 
-
- }
+   }   
+      }//inframe condiition  
+    
+    }                                          
+    
+binFile.close();
+  
+  } //closed while loop on reading a binary file   
 
  return 0;
                                                              
 }
+}
+       */
