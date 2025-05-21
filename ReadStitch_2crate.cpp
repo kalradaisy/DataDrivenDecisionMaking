@@ -224,12 +224,12 @@ int main(int argc, char** argv){
 
   zmq::context_t context1(1);
   zmq::socket_t publisher(context1, ZMQ_PUB);
-  publisher.bind("tcp://127.0.0.1:7650");                                                                                                      
+  publisher.bind("tcp://127.0.0.1:7550");                                                                                                      
    
   zmq::context_t context2s(1);
   zmq::socket_t publisher2s(context2s, ZMQ_PUB);
  
-  publisher2s.bind("tcp://127.0.0.1:7652"); 
+  publisher2s.bind("tcp://127.0.0.1:7552"); 
   
 
   //For channel mapping                                                                                                                                                                            
@@ -323,7 +323,7 @@ int main(int argc, char** argv){
   // uint64_t limit=50;
   //  uint64_t limit2=8000;
   int countFlipBit=0;
-  int totval=20;
+  int totval=1;
   int diff,diffcheck,nearestPower,diffprev;
   std::vector<int> adcdiff;
 
