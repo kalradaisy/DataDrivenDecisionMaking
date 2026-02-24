@@ -77,7 +77,7 @@ int main() {
   zmq::context_t context(1);
 
   zmq::socket_t subscriber1(context, ZMQ_SUB);
-  subscriber1.connect("tcp://127.0.0.1:7621");
+  subscriber1.connect("tcp://127.0.0.1:7921");
   subscriber1.setsockopt(ZMQ_SUBSCRIBE, "", 0);
 
 
@@ -346,6 +346,14 @@ int main() {
 	      breaknow = true;
 	      //    return -1;
 	      DataFile.flush();
+
+	      auto end = std::chrono::system_clock::now();
+              auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
+	      std::cout << "tot time: " << std::dec << elapsed.count() << " microseconds" << std::endl;
+              outputFile.flush();
+              outputFile << FilterFrame << "\t" <<elapsed.count() <<  endl;
+
+
 	      //std::streampos fileSize = DataFile.tellp();
 	      //cout << "File sixe :" << fileSize << endl;
  	      break;
@@ -552,12 +560,10 @@ int main() {
 
   auto end = std::chrono::system_clock::now();
   auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end - start);
-  // auto elapsed1 = std::chrono::duration_cast<std::chrono::milliseconds>(end - start1);                                        
   std::cout << "tot time: " << std::dec << elapsed.count() << " microseconds" << std::endl;
-  // std::cout << "time after receiving msgs: " << std::dec << elapsed1.count() << " microseconds" << std::endl;                 
-
+  outputFile << FilterFrame << "\t" <<elapsed.count() <<  endl;
   outputFile.flush();
-  outputFile << FilterFrame << "\t" << elapsed.count() << endl;
+
 
 
     }}

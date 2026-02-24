@@ -26,10 +26,20 @@
 #include <dirent.h>
 #include <cstring>
 #include <random>
+#include <stdio.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <sys/stat.h>
 
 
 using namespace std;
 
+void wait_for_start_signal(const char* signal_file) {
+  struct stat buffer;
+  while (stat(signal_file, &buffer) != 0) {
+    usleep(1000); // sleep for 1 ms
+  }
+}
 
 std::string toLowerCase(std::string s) {
   std::transform(s.begin(), s.end(), s.begin(), ::tolower);
@@ -219,17 +229,18 @@ int returnbaseline(int fseb, int fsebfem, int fsebfemch, std::vector<ForBaseline
 
 
 int main(int argc, char** argv){
+  //    wait_for_start_signal("start.signal");
 
   int CRATE=strtol(argv[1], nullptr, 0); 
 
   zmq::context_t context1(1);
   zmq::socket_t publisher(context1, ZMQ_PUB);
-  publisher.bind("tcp://127.0.0.1:7550");                                                                                                      
+  publisher.bind("tcp://127.0.0.1:7250");                                                                                                      
    
   zmq::context_t context2s(1);
   zmq::socket_t publisher2s(context2s, ZMQ_PUB);
  
-  publisher2s.bind("tcp://127.0.0.1:7552"); 
+  publisher2s.bind("tcp://127.0.0.1:7252"); 
   
 
   //For channel mapping                                                                                                                                                                            
