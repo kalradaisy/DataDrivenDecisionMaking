@@ -430,7 +430,7 @@ int main(int argc, char** argv){
  auto startf = std::chrono::system_clock::now();
  for (const auto& filename : filenames) {
    
-   //std::cout << "Found file: " << filename <<  std::endl;   
+   std::cout << "Found file: " << filename <<  std::endl;   
        //   std::ifstream binFile;
    binFile.open("/data/kalra_TPCTriggerFiles/Nom_plus_"+std::to_string(dataset)+"/"+filename, std::ios::binary);
        auto endf = std::chrono::system_clock::now();

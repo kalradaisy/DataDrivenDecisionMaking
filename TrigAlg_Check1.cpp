@@ -455,8 +455,8 @@ int main()
     int timewid=0;
     int trigtot;
     int time_diff = 30;
-    int braggE_min = 1200; //1300; // 27500; //  27500 is used in uB based on incoming muon angle vs maxadc                                                                        
-    int braggE_max = 15000; 
+    int braggE_min = 849; // 1200; //1300; // 27500; //  27500 is used in uB based on incoming muon angle vs maxadc                                                                        
+    int braggE_max = 2151; //15000; 
     int chnl_maxadc;
     int time_max, this_time_max, prev_time_max, horiz_tt;
     int temp_t;
@@ -982,7 +982,7 @@ int main()
 	       auto end2 = std::chrono::system_clock::now();
                auto elapsed2 = std::chrono::duration_cast<std::chrono::microseconds>(end2 - endr);
 	       //	       std::cout << "Sent candidate decision: " << std::dec << elapsed2r.count() << " microseconds" << std::endl;
-               outputFile1 << tp_list_maxadc[imaxadc].driftRegion   << "\t" << tp_list_maxadc[imaxadc].frame << "\t" << tp_list_maxadc[imaxadc].channel << "\t" << tp_list_maxadc[imaxadc].time_start << "\t" << tp_list_maxadc[imaxadc].adc_integral << "\t" << elapsed2.count() <<  "\t" << elapsed2brg.count() << "\n";
+               outputFile1 << tp_list_maxadc[imaxadc].driftRegion   << "\t" << tp_list_maxadc[imaxadc].frame << "\t" << tp_list_maxadc[imaxadc].channel << "\t" << tp_list_maxadc[imaxadc].time_start << "\t" << tp_list_maxadc[imaxadc].adc_integral << "\t" << elapsed2.count() <<  "\t" <<  tp_list_maxadc[imaxadc].adc_peak <<  "\t" << elapsed2brg.count() << "\t" << abs(frontangle_mid-backangle_mid) << "\t" << abs(frontangle_top-backangle_top) << "\t" << abs(frontangle_bottom-backangle_bottom) <<  "\n";
 
 	       outputFile1.flush();
 

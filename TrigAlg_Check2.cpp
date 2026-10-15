@@ -994,7 +994,10 @@ int main()
 	       peaklist.clear();
 	       auto end2 = std::chrono::system_clock::now();
                auto elapsed2 = std::chrono::duration_cast<std::chrono::microseconds>(end2 - endr);
-	       outputFile1 << tp_list_maxadc[imaxadc].driftRegion   << "\t" << tp_list_maxadc[imaxadc].frame << "\t" << tp_list_maxadc[imaxadc].channel << "\t" << tp_list_maxadc[imaxadc].time_start << "\t" << tp_list_maxadc[imaxadc].adc_integral << "\t" << elapsed2.count() << "\t" << elapsed2brg.count() <<  "\n";
+
+
+	       outputFile1 << tp_list_maxadc[imaxadc].driftRegion   << "\t" << tp_list_maxadc[imaxadc].frame << "\t" << tp_list_maxadc[imaxadc].channel << "\t" << tp_list_maxadc[imaxadc].time_start << "\t" << tp_list_maxadc[imaxadc].adc_integral << "\t" << elapsed2.count() <<  "\t" <<  tp_list_maxadc[imaxadc].adc_peak <<  "\t" << elapsed2brg.count() << "\t" << abs(frontangle_mid-backangle_mid) << "\t" << abs(frontangle_top-backangle_top) << "\t" << abs(frontangle_bottom-backangle_bottom) <<  "\n";
+
 
                outputFile1.flush();
 
